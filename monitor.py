@@ -416,6 +416,67 @@ def auth_cookie_days_left(cookies: list) -> float | None:
     return round((min(exps) - time.time()) / 86400, 2)
 
 
+# -------------------------------------------------------------- watchdog ---
+
+GH_REPO = "jphillips6106-arch/wyzant-monitor"
+
+
+def github_monitor_health() -> tuple[bool, str]:
+    """Ask GitHub's public API whether the cloud copy is alive.
+    Healthy = workflow active AND (a run is queued/in progress OR the last run
+    finished less than 40 minutes ago)."""
+    import urllib.request as ur
+    hdr = {"Accept": "application/vnd.github+json", "User-Agent": "wyzant-monitor-watchdog"}
+    def get(path):
+        with ur.urlopen(ur.Request(f"https://api.github.com/repos/{GH_REPO}{path}", headers=hdr), timeout=20) as r:
+            return json.loads(r.read())
+    wf = [w for w in get("/actions/workflows")["workflows"] if w["path"].endswith("monitor.yml")]
+    if not wf:
+        return False, "workflow file not found in the repo"
+    if wf[0]["state"] != "active":
+        return False, f"workflow is {wf[0]['state']}"
+    runs = get(f"/actions/workflows/{wf[0]['id']}/runs?per_page=5")["workflow_runs"]
+    if not runs:
+        return False, "no runs at all"
+    if any(r["status"] in ("in_progress", "queued", "waiting", "pending") for r in runs):
+        return True, "a run is live"
+    last = runs[0]
+    ended = datetime.strptime(last["updated_at"], "%Y-%m-%dT%H:%M:%SZ").timestamp() - time.timezone
+    mins = (time.time() - ended) / 60
+    if mins > 40:
+        return False, f"no live run; last one ended {mins:.0f} min ago ({last['conclusion']})"
+    return True, f"last run ended {mins:.0f} min ago"
+
+
+def watchdog(cfg: dict, state: dict) -> None:
+    """Mac side: every 10 minutes check that the GitHub copy is alive; if not,
+    banner + email (email even though the Mac's normal alerts are banner-only)."""
+    if not cfg.get("watch_github", True) or not IS_MAC:
+        return
+    state.setdefault("watchdog_checked_at", 0)
+    state.setdefault("watchdog_nag_at", 0)
+    if time.time() - state["watchdog_checked_at"] < 600:
+        return
+    state["watchdog_checked_at"] = time.time()
+    try:
+        ok, why = github_monitor_health()
+    except Exception as e:
+        log(f"watchdog: GitHub API unreachable ({type(e).__name__})")
+        return
+    log(f"watchdog: github copy {'OK' if ok else 'DOWN'} ({why})")
+    if ok:
+        state["watchdog_nag_at"] = 0
+        return
+    if time.time() - state["watchdog_nag_at"] > 6 * 3600:
+        state["watchdog_nag_at"] = time.time()
+        body = (f"The GitHub copy of the Wyzant monitor is not running: {why}. "
+                f"Check https://github.com/{GH_REPO}/actions and re-enable or re-run the workflow. "
+                "Until then only this Mac is watching the board (and only while awake).")
+        mac_notify("Wyzant monitor: GitHub copy is DOWN", body)
+        send_email({"email_to": cfg.get("watchdog_email") or "philjoe@sas.upenn.edu"},
+                   "Wyzant monitor: GitHub copy is DOWN", body, f"https://github.com/{GH_REPO}/actions")
+
+
 # ------------------------------------------------------------------ main ---
 
 def main() -> int:
@@ -558,6 +619,7 @@ def process_views(cfg, state, seen, keywords, views, detail_page) -> int:
                    f"Your Wyzant login cookie runs out soon. {where}")
             state["expiry_nag_at"] = time.time()
     log(" | ".join(summary))
+    watchdog(cfg, state)
 
     if first_run:
         state["bootstrapped"] = True
@@ -618,6 +680,13 @@ if __name__ == "__main__":
         if "--send" in sys.argv:
             notify(cfg, title, banner, j["url"], email_body=email_body, html=html)
             print("\n(sent)")
+        sys.exit(0)
+    if "--notify" in sys.argv:
+        # --notify "<title>" "<body>": send a plain alert through every configured channel
+        i = sys.argv.index("--notify")
+        cfg = load_json(CONFIG, {})
+        notify(cfg, sys.argv[i + 1], sys.argv[i + 2], f"https://github.com/{GH_REPO}/actions")
+        print("notified")
         sys.exit(0)
     if "--test" in sys.argv or "--test-email" in sys.argv:
         cfg = load_json(CONFIG, {})

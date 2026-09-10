@@ -1,0 +1,51 @@
+name: Monitor watchdog
+
+on:
+  schedule:
+    - cron: "7 * * * *"        # hourly
+  workflow_dispatch:
+
+permissions:
+  actions: write               # allowed to (re)start the monitor workflow
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MONITOR_QUIET: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Is the monitor alive?
+        id: health
+        run: |
+          live=$(gh run list --workflow=monitor.yml --limit 10 --json status -q '[.[] | select(.status=="in_progress" or .status=="queued" or .status=="waiting" or .status=="pending")] | length')
+          echo "live=$live"
+          echo "live=$live" >> "$GITHUB_OUTPUT"
+          if [ "$live" = "0" ]; then
+            echo "No live monitor run. Starting one."
+            if gh workflow run monitor.yml; then echo "restarted=yes" >> "$GITHUB_OUTPUT"; else echo "restarted=failed" >> "$GITHUB_OUTPUT"; fi
+          fi
+
+      - name: Email if the monitor had to be restarted (or could not be)
+        if: ${{ steps.health.outputs.live == '0' }}
+        env:
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+          RESTARTED: ${{ steps.health.outputs.restarted }}
+        run: |
+          pip install -q -r requirements.txt >/dev/null
+          printf '{"smtp_user":"%s","smtp_app_password":"%s","smtp_host":"smtp.gmail.com","smtp_port":465}\n' "$SMTP_USER" "$SMTP_APP_PASSWORD" > secrets.json
+          python - <<PY
+          import json; c=json.load(open("config.json")); c["email_to"]="$EMAIL_TO"; json.dump(c, open("config.json","w"), indent=2)
+          PY
+          if [ "$RESTARTED" = "yes" ]; then
+            python monitor.py --notify "Wyzant monitor: cloud copy restarted" "The hourly watchdog found no running monitor job on GitHub and started a new one. Nothing to do unless this keeps happening. Runs: https://github.com/${{ github.repository }}/actions"
+          else
+            python monitor.py --notify "Wyzant monitor: cloud copy is DOWN" "The hourly watchdog found no running monitor job on GitHub and could NOT start one (the workflow may be disabled). Open https://github.com/${{ github.repository }}/actions/workflows/monitor.yml and click Enable workflow / Run workflow."
+          fi
+          rm -f secrets.json
