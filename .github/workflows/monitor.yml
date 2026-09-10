@@ -6,9 +6,13 @@ on:
   workflow_dispatch:           # "Run workflow" button for manual tests
     inputs:
       test_email:
-        description: "Send a test email instead of polling"
+        description: "Send a plain test email instead of polling"
         type: boolean
         default: false
+      resend_job_id:
+        description: "Send a full formatted alert for this Wyzant job id (e.g. 8405599)"
+        type: string
+        default: ""
 
 concurrency:
   group: monitor
@@ -66,12 +70,16 @@ jobs:
           chmod 600 auth_state.json secrets.json
 
       - name: Poll the board
-        if: ${{ !inputs.test_email }}
+        if: ${{ !inputs.test_email && inputs.resend_job_id == '' }}
         run: python monitor.py
 
       - name: Test email
         if: ${{ inputs.test_email }}
         run: python monitor.py --test-email
+
+      - name: Resend a formatted job alert
+        if: ${{ inputs.resend_job_id != '' }}
+        run: python monitor.py --resend "${{ inputs.resend_job_id }}" --send > /dev/null && echo "alert sent for job ${{ inputs.resend_job_id }}"
 
       - name: Save state
         if: always()
