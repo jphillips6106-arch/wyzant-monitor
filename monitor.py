@@ -133,6 +133,8 @@ def send_email(cfg: dict, title: str, body: str, url: str | None = None, html: s
 def notify(cfg: dict, title: str, body: str, url: str | None = None, email_body: str | None = None, html: str | None = None) -> None:
     mac_notify(title, body)
     if cfg.get("email_to"):
+        if html is None:
+            html = render_status_html(title, body, url)
         send_email(cfg, title, email_body or body, None if email_body else url, html=html)
     if cfg.get("phone_push") and cfg.get("ntfy_topic"):
         ntfy(cfg["ntfy_topic"], title, body, url)
@@ -360,6 +362,41 @@ def render_html(subject: str, matched: str, lesson: str, name: str, location: st
 </td></tr></table></body></html>"""
 
 
+def render_status_html(title: str, body: str, url: str | None = None) -> str:
+    """Card layout for one-line status messages (watchdog, session, tests)."""
+    t = title.lower()
+    if any(k in t for k in ("down", "logged out", "can't read", "cannot", "failed")):
+        accent, tone, label = "#d1242f", "#fff5f5", "Needs attention"
+    elif any(k in t for k in ("expires", "restarted", "warning", "blocked", "changed")):
+        accent, tone, label = "#bf8700", "#fffaeb", "Heads-up"
+    elif "test" in t:
+        accent, tone, label = "#1f6feb", "#f0f6ff", "Test"
+    else:
+        accent, tone, label = "#1a7f37", "#f2fbf4", "All good"
+    ink, muted, line, soft = "#1b1f24", "#6b7280", "#e5e7eb", "#f6f8fa"
+    short = title.split(":", 1)[1].strip() if ":" in title else title
+    short = short[:1].upper() + short[1:]
+    # Turn bare URLs in the body into links and keep line breaks.
+    body_html = re.sub(r"(https?://\S+)", lambda m: f'<a href="{m.group(1)}" style="color:{accent}">{m.group(1)}</a>', _esc(body))
+    body_html = body_html.replace("\n", "<br>")
+    button = (f'<a href="{_esc(url)}" style="display:inline-block;background:{accent};color:#fff;text-decoration:none;'
+              f'font-weight:700;font-size:14px;padding:11px 20px;border-radius:8px">Open &rarr;</a>') if url else ""
+    return f"""<!doctype html><html><body style="margin:0;padding:0;background:{soft}">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:{soft};padding:28px 12px"><tr><td align="center">
+<table width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background:#fff;border:1px solid {line};border-radius:12px;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif">
+  <tr><td style="background:{accent};height:6px;font-size:0;line-height:0">&nbsp;</td></tr>
+  <tr><td style="padding:24px 28px 0 28px">
+    <div style="font-size:11px;font-weight:700;letter-spacing:.08em;color:{muted};text-transform:uppercase">Wyzant monitor &middot; {label}</div>
+    <div style="font-size:22px;font-weight:700;color:{ink};margin-top:6px;line-height:1.3">{_esc(short)}</div>
+  </td></tr>
+  <tr><td style="padding:18px 28px 0 28px">
+    <div style="background:{tone};border-left:3px solid {accent};border-radius:6px;padding:14px 16px;font-size:15px;line-height:1.55;color:{ink}">{body_html}</div>
+  </td></tr>
+  <tr><td style="padding:22px 28px 6px 28px">{button}</td></tr>
+  <tr><td style="padding:16px 28px 22px 28px;font-size:11px;color:{muted};border-top:1px solid {line}">Sent {datetime.now():%b %-d, %Y at %-I:%M %p} &middot; Mac + GitHub copies check the board every 2.5 minutes</td></tr>
+</table></td></tr></table></body></html>"""
+
+
 def build_alert(view: str, j: dict, det: dict) -> tuple[str, str, str, str]:
     """Return (banner_title, banner_body, email_text, email_html)."""
     card = parse_card(j)
@@ -473,8 +510,8 @@ def watchdog(cfg: dict, state: dict) -> None:
                 f"Check https://github.com/{GH_REPO}/actions and re-enable or re-run the workflow. "
                 "Until then only this Mac is watching the board (and only while awake).")
         mac_notify("Wyzant monitor: GitHub copy is DOWN", body)
-        send_email({"email_to": cfg.get("watchdog_email") or "philjoe@sas.upenn.edu"},
-                   "Wyzant monitor: GitHub copy is DOWN", body, f"https://github.com/{GH_REPO}/actions")
+        t = "Wyzant monitor: GitHub copy is DOWN"; u = f"https://github.com/{GH_REPO}/actions"
+        send_email({"email_to": cfg.get("watchdog_email") or "philjoe@sas.upenn.edu"}, t, body, u, html=render_status_html(t, body, u))
 
 
 # ------------------------------------------------------------------ main ---
