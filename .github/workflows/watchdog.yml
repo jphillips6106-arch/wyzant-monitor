@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "7 * * * *"        # hourly
   workflow_dispatch:
+    inputs:
+      test_email:
+        description: "Send the watchdog alert email as a test"
+        type: boolean
+        default: false
 
 permissions:
   actions: write               # allowed to (re)start the monitor workflow
@@ -31,7 +36,7 @@ jobs:
           fi
 
       - name: Email if the monitor had to be restarted (or could not be)
-        if: ${{ steps.health.outputs.live == '0' }}
+        if: ${{ steps.health.outputs.live == '0' || inputs.test_email }}
         env:
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
@@ -43,7 +48,9 @@ jobs:
           python - <<PY
           import json; c=json.load(open("config.json")); c["email_to"]="$EMAIL_TO"; json.dump(c, open("config.json","w"), indent=2)
           PY
-          if [ "$RESTARTED" = "yes" ]; then
+          if [ "${{ inputs.test_email }}" = "true" ]; then
+            python monitor.py --notify "Wyzant monitor: watchdog TEST" "This is a test of the hourly GitHub watchdog email. A real one would say either 'cloud copy restarted' or 'cloud copy is DOWN' with a link to fix it. Monitor is currently alive (live runs: ${{ steps.health.outputs.live }})."
+          elif [ "$RESTARTED" = "yes" ]; then
             python monitor.py --notify "Wyzant monitor: cloud copy restarted" "The hourly watchdog found no running monitor job on GitHub and started a new one. Nothing to do unless this keeps happening. Runs: https://github.com/${{ github.repository }}/actions"
           else
             python monitor.py --notify "Wyzant monitor: cloud copy is DOWN" "The hourly watchdog found no running monitor job on GitHub and could NOT start one (the workflow may be disabled). Open https://github.com/${{ github.repository }}/actions/workflows/monitor.yml and click Enable workflow / Run workflow."
