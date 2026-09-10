@@ -2,7 +2,10 @@ name: Wyzant job monitor
 
 on:
   schedule:
-    - cron: "*/5 * * * *"      # every 5 minutes (GitHub may delay a few minutes)
+    # Each run is a ~5h45m job that polls every 2.5 minutes. A new run is queued
+    # every 30 minutes; the concurrency group makes it wait its turn, so the
+    # next one starts the moment the current one ends. Continuous coverage.
+    - cron: "*/30 * * * *"
   workflow_dispatch:           # "Run workflow" button for manual tests
     inputs:
       test_email:
@@ -24,9 +27,11 @@ permissions:
 jobs:
   poll:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 360
     env:
       MONITOR_QUIET: "1"
+      POLL_SECONDS: "150"      # 2.5 minutes between board checks
+      LOOP_MINUTES: "345"      # hand off to the next run after 5h45m
     steps:
       - uses: actions/checkout@v4
 
@@ -69,9 +74,9 @@ jobs:
           PY
           chmod 600 auth_state.json secrets.json
 
-      - name: Poll the board
+      - name: Poll the board (continuous)
         if: ${{ !inputs.test_email && inputs.resend_job_id == '' }}
-        run: python monitor.py
+        run: python monitor.py --loop
 
       - name: Test email
         if: ${{ inputs.test_email }}

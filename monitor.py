@@ -579,7 +579,29 @@ def process_views(cfg, state, seen, keywords, views, detail_page) -> int:
     return 0
 
 
+def loop_forever(poll_seconds: int, max_minutes: int) -> None:
+    """Cloud mode: keep polling inside one long CI job (GitHub's cron can't go
+    below 5 minutes, but a job can run for up to 6 hours)."""
+    end = time.time() + max_minutes * 60
+    n = 0
+    while time.time() < end:
+        n += 1
+        t0 = time.time()
+        try:
+            main()
+        except Exception as e:
+            log(f"ERROR in poll {n}: {type(e).__name__}: {str(e).splitlines()[0] if str(e) else ''}")
+        remaining = end - time.time()
+        if remaining < poll_seconds:
+            break
+        time.sleep(max(5, poll_seconds - (time.time() - t0)))
+    log(f"loop finished after {n} polls")
+
+
 if __name__ == "__main__":
+    if "--loop" in sys.argv:
+        loop_forever(int(os.environ.get("POLL_SECONDS", "150")), int(os.environ.get("LOOP_MINUTES", "345")))
+        sys.exit(0)
     if "--resend" in sys.argv:
         cfg = load_json(CONFIG, {})
         job_id = sys.argv[sys.argv.index("--resend") + 1]
