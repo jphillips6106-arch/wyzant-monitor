@@ -1,0 +1,5 @@
+auth_state.json
+secrets.json
+state.json
+debug/
+*.log

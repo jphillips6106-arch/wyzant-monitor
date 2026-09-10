@@ -1,0 +1,103 @@
+name: Wyzant job monitor
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"      # every 5 minutes (GitHub may delay a few minutes)
+  workflow_dispatch:           # "Run workflow" button for manual tests
+    inputs:
+      test_email:
+        description: "Send a test email instead of polling"
+        type: boolean
+        default: false
+
+concurrency:
+  group: monitor
+  cancel-in-progress: false
+
+permissions:
+  contents: write              # heartbeat commit keeps the schedule from auto-disabling
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MONITOR_QUIET: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore state (seen jobs + refreshed session)
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            state.json
+            auth_state.json
+          key: monitor-state-${{ github.run_id }}
+          restore-keys: monitor-state-
+
+      - name: Cache Playwright browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-chromium-${{ hashFiles('requirements.txt') }}
+
+      - name: Install
+        run: |
+          pip install -q -r requirements.txt
+          python -m playwright install chromium --with-deps
+
+      - name: Write secrets to files
+        env:
+          AUTH_STATE: ${{ secrets.WYZANT_AUTH_STATE }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+          EMAIL_TO: ${{ secrets.EMAIL_TO }}
+        run: |
+          # Prefer the cached (refreshed) session; fall back to the secret you pasted.
+          if [ ! -s auth_state.json ]; then printf '%s' "$AUTH_STATE" > auth_state.json; fi
+          printf '{"smtp_user":"%s","smtp_app_password":"%s","smtp_host":"smtp.gmail.com","smtp_port":465}\n' "$SMTP_USER" "$SMTP_APP_PASSWORD" > secrets.json
+          python - <<PY
+          import json; c=json.load(open("config.json")); c["email_to"]="$EMAIL_TO"; json.dump(c, open("config.json","w"), indent=2)
+          PY
+          chmod 600 auth_state.json secrets.json
+
+      - name: Poll the board
+        if: ${{ !inputs.test_email }}
+        run: python monitor.py
+
+      - name: Test email
+        if: ${{ inputs.test_email }}
+        run: python monitor.py --test-email
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            state.json
+            auth_state.json
+          key: monitor-state-${{ github.run_id }}
+
+      - name: Scrub secrets from the runner
+        if: always()
+        run: rm -f auth_state.json secrets.json
+
+  heartbeat:
+    # GitHub disables cron workflows after 60 days without a commit; nudge weekly.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    needs: poll
+    steps:
+      - uses: actions/checkout@v4
+      - name: Weekly heartbeat commit
+        run: |
+          if [ "$(date -u +%u%H)" = "101" ] && [ "$(date -u +%M)" -lt 5 ]; then   # Mondays 01:00-01:04 UTC
+            git config user.name "monitor-bot"; git config user.email "monitor-bot@users.noreply.github.com"
+            date -u > .heartbeat && git add .heartbeat && git commit -m "heartbeat" && git push
+          else
+            echo "not heartbeat time"
+          fi
