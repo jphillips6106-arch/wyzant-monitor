@@ -367,10 +367,10 @@ def build_alert(view: str, j: dict, det: dict) -> tuple[str, str, str, str]:
     matched = card["matched_subject"]
     title_txt = det.get("title") or ""
     if not matched and title_txt:
-        m = re.search(r"([A-Z][A-Za-z0-9 &/+-]*?)\s+tutoring job$", title_txt)
+        # title is "<City, ST> <Subject> tutoring job" (or "Online <Subject> tutoring job")
+        m = re.match(r"^(?:.*?,\s*[A-Z]{2}\s+|Online\s+)?(.+?)\s+tutoring job$", title_txt.strip(), re.I)
         if m:
-            # title is "<City, ST> <Subject> tutoring job"; drop the "City, ST" prefix
-            matched = re.sub(r"^.*?,\s*[A-Z]{2}\s+", "", m.group(1)).strip()
+            matched = m.group(1).strip()
     lesson = det.get("preferred lesson location") or view.replace("_", " ").title()
     name = det.get("name") or card["name"]
     location = det.get("location") or ""
