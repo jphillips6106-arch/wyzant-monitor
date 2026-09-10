@@ -408,6 +408,14 @@ def build_alert(view: str, j: dict, det: dict) -> tuple[str, str, str, str]:
     return title, banner, email, html
 
 
+def auth_cookie_days_left(cookies: list) -> float | None:
+    """Days until Wyzant's login cookie expires (wyzauth family)."""
+    exps = [c.get("expires") for c in cookies if c.get("name") in ("wyzauth", "wyzauth_v2", ".AspNet.ApplicationCookie") and c.get("expires", -1) > 0]
+    if not exps:
+        return None
+    return round((min(exps) - time.time()) / 86400, 2)
+
+
 # ------------------------------------------------------------------ main ---
 
 def main() -> int:
@@ -446,10 +454,15 @@ def main() -> int:
             if use_state and all(v["logged_in"] for v in views.values()):
                 ctx.storage_state(path=str(AUTH_STATE))  # keep refreshed cookies
                 AUTH_STATE.chmod(0o600)
+            try:
+                auth_days = auth_cookie_days_left(ctx.cookies())
+            except Exception:
+                auth_days = None
         finally:
             ctx.close()
             if browser:
                 browser.close()
+        state["auth_days_left"] = auth_days
 
         if any(not v["logged_in"] for v in views.values()):
             detail_page = None
@@ -534,6 +547,16 @@ def process_views(cfg, state, seen, keywords, views, detail_page) -> int:
                         open_in_browser(cfg, url)
                         log(f"NOTIFIED (fallback) {name}: {body}")
 
+    days = state.get("auth_days_left")
+    if days is not None:
+        summary.append(f"session expires in {days:.1f}d")
+        state.setdefault("expiry_nag_at", 0)
+        if days < 2 and time.time() - state["expiry_nag_at"] > 24 * 3600:
+            where = ("On the Mac run ~/wyzant_monitor/login.sh." if IS_MAC else
+                     "On the Mac run ~/wyzant_monitor/github/prepare.sh, then paste the clipboard into the WYZANT_AUTH_STATE secret on GitHub.")
+            notify(cfg, f"Wyzant monitor: session expires in {max(days, 0):.1f} days",
+                   f"Your Wyzant login cookie runs out soon. {where}")
+            state["expiry_nag_at"] = time.time()
     log(" | ".join(summary))
 
     if first_run:
